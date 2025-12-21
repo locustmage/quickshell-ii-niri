@@ -150,6 +150,17 @@ Full reference with examples: [docs/IPC.md](docs/IPC.md)
 
 ---
 
+## Recommendations for Users
+
+If you are not a fan of fish, before you remove the package, make sure to change your Login Shell first
+
+```bash
+chsh -s /bin/bash
+```
+This developer does not recommend zsh as login due to its incompatibility with certain shell scripts
+
+---
+
 ## Troubleshooting
 
 Something broke? Shocking.
