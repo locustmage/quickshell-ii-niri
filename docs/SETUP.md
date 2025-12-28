@@ -49,8 +49,9 @@ Restore a previous snapshot if something breaks after an update. Shows available
 | `./setup update` | Check remote, pull, sync, restart |
 | `./setup doctor` | Diagnose and auto-fix |
 | `./setup rollback` | Restore previous snapshot |
+| `./setup uninstall` | Remove ii configs and safe-to-remove packages |
 
-Options: `-y` (skip prompts), `-q` (quiet), `-h` (help)
+Options: `-y` (skip prompts), `-q` (quiet), `--no-packages` (uninstall only, do not remove packages), `-h` (help)
 
 ## What Gets Installed
 
@@ -73,6 +74,25 @@ Some features need config changes (new keybinds, layer rules, etc). After `updat
 - Update backups: `~/.local/state/quickshell/backups/`
 
 ## Uninstall
+
+Preferred method (safe and reversible):
+
+```bash
+./setup uninstall
+```
+
+Configs-only uninstall (leave all packages installed):
+
+```bash
+./setup uninstall --no-packages
+```
+
+The uninstall command will:
+- stop the ii shell if it is running
+- remove ii's configuration and state files
+- optionally remove ii-related packages that are **not** required by anything else on your system (unless `--no-packages` is passed)
+
+If you prefer to uninstall manually:
 
 ```bash
 # Stop ii from starting

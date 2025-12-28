@@ -119,6 +119,19 @@ Don't want everything? The setup script has options:
 
 ---
 
+## Uninstall
+
+To remove ii later, use the setup helper:
+
+```bash
+./setup uninstall          # remove configs + (optionally) safe-to-remove packages
+./setup uninstall --no-packages  # remove configs only, keep all packages
+```
+
+See `docs/SETUP.md` for details and safety notes.
+
+---
+
 ## What now?
 
 - [KEYBINDS.md](KEYBINDS.md) - Learn the shortcuts

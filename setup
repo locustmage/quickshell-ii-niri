@@ -53,6 +53,7 @@ prevent_sudo_or_root
 # Defaults
 ask=true
 quiet=false
+UNINSTALL_NO_PACKAGES=false
 
 ###############################################################################
 # Help
@@ -71,12 +72,14 @@ show_help() {
     tui_list_item "migrate     Review/apply config migrations"
     tui_list_item "doctor      Diagnose and fix problems"
     tui_list_item "rollback    Restore previous snapshot"
+    tui_list_item "uninstall   Remove ii configs and safe-to-remove packages"
     echo ""
     
     tui_subtitle "Options"
-    tui_list_item "-y, --yes     Skip prompts (auto-yes)"
-    tui_list_item "-q, --quiet   Minimal output"
-    tui_list_item "-h, --help    Show this help"
+    tui_list_item "-y, --yes        Skip prompts (auto-yes)"
+    tui_list_item "-q, --quiet      Minimal output"
+    tui_list_item "    --no-packages  Uninstall: do not remove packages"
+    tui_list_item "-h, --help       Show this help"
     echo ""
     
     tui_subtitle "Examples"
@@ -85,6 +88,7 @@ show_help() {
     tui_dim "  ./setup migrate      # Review/apply pending migrations"
     tui_dim "  ./setup doctor       # Fix common issues"
     tui_dim "  ./setup rollback     # Restore previous state"
+    tui_dim "  ./setup uninstall    # Remove ii configs and (optionally) packages"
     echo ""
 }
 
@@ -137,7 +141,7 @@ tui_menu() {
     local choice
     if $is_installed; then
         choice=$(tui_choose "What would you like to do?" \
-            "Update" "Migrate" "Doctor" "Rollback" "Reinstall" "Status" "Help" "Exit")
+            "Update" "Migrate" "Doctor" "Rollback" "Reinstall" "Uninstall" "Status" "Help" "Exit")
     else
         choice=$(tui_choose "What would you like to do?" \
             "Install" "Help" "Exit")
@@ -149,6 +153,7 @@ tui_menu() {
         Migrate) run_migrate ;;
         Doctor) run_doctor ;;
         Rollback) run_rollback ;;
+        Uninstall) run_uninstall ;;
         Status) show_status; read -p "Press Enter to continue..." ;;
         Help) show_help; read -p "Press Enter to continue..." ;;
         *) exit 0 ;;
@@ -435,6 +440,195 @@ run_doctor() {
 }
 
 ###############################################################################
+# Uninstall
+###############################################################################
+
+# Return 0 if the package is installed and required by some other package.
+# Return 1 if the package is not installed or not required elsewhere.
+is_pkg_required_elsewhere() {
+    local pkg="$1"
+
+    if ! command -v pacman >/dev/null 2>&1; then
+        return 1
+    fi
+
+    if ! pacman -Qi "$pkg" >/dev/null 2>&1; then
+        return 1
+    fi
+
+    local req_by
+    req_by=$(pacman -Qi "$pkg" | sed -n 's/^Required By *: *//p')
+
+    [[ "$req_by" != "None" ]]
+}
+
+remove_ii_packages_arch() {
+    tui_step 2 3 "Removing ii-related packages (safe mode)"
+
+    detect_distro
+    if [[ "$OS_GROUP_ID" != "arch" ]]; then
+        tui_warn "Package uninstall is only implemented for Arch-based systems; skipping."
+        return 0
+    fi
+
+    if ! command -v pacman >/dev/null 2>&1; then
+        tui_warn "pacman not found; skipping package removal."
+        return 0
+    fi
+
+    local pkgdir pkgb
+    local -a candidates=()
+
+    # Read dependencies from local PKGBUILDs
+    for pkgdir in ./sdata/dist-arch/ii-niri-*/; do
+        pkgb="${pkgdir}/PKGBUILD"
+        [[ -f "$pkgb" ]] || continue
+
+        # shellcheck disable=SC1090
+        source "$pkgb"
+        if [[ ${#depends[@]} -gt 0 ]]; then
+            candidates+=("${depends[@]}")
+        fi
+        unset depends
+    done
+
+    # AUR and font/tooling packages used by install-deps.sh
+    local -a aur_core=(
+        quickshell-git
+        google-breakpad
+        qt6-avif-image-plugin
+    )
+    local -a aur_fonts_core=(
+        matugen-bin
+        adw-gtk-theme-git
+        capitaine-cursors
+        whitesur-icon-theme-git
+        darkly
+    )
+    local -a aur_fonts_required=(
+        ttf-material-symbols-variable-git
+        ttf-jetbrains-mono-nerd
+    )
+    local -a aur_fonts_optional=(
+        otf-space-grotesk
+        ttf-readex-pro
+        ttf-rubik-vf
+        ttf-twemoji
+    )
+    local -a aur_tooling=(
+        uv
+    )
+
+    candidates+=(
+        "${aur_core[@]}"
+        "${aur_fonts_core[@]}"
+        "${aur_fonts_required[@]}"
+        "${aur_fonts_optional[@]}"
+        "${aur_tooling[@]}"
+    )
+
+    # Deduplicate
+    local -a unique=()
+    local -A seen=()
+    local p
+    for p in "${candidates[@]}"; do
+        [[ -z "$p" ]] && continue
+        if [[ -z "${seen["$p"]}" ]]; then
+            seen["$p"]=1
+            unique+=("$p")
+        fi
+    done
+
+    # Filter to only installed and not required elsewhere
+    local -a to_remove=()
+    for p in "${unique[@]}"; do
+        pacman -Qq "$p" &>/dev/null || continue
+        if is_pkg_required_elsewhere "$p"; then
+            tui_warn "Keeping $p (required by other packages)"
+        else
+            to_remove+=("$p")
+        fi
+    done
+
+    if [[ ${#to_remove[@]} -eq 0 ]]; then
+        tui_info "No packages eligible for removal (or all are required elsewhere)."
+        return 0
+    fi
+
+    echo ""
+    tui_warn "The following packages will be removed (they are not required elsewhere):"
+    printf '  - %s\n' "${to_remove[@]}"
+
+    if $ask && ! tui_confirm "Proceed with pacman -Rns on these packages?" "no"; then
+        tui_info "Skipping package removal."
+        return 0
+    fi
+
+    v sudo pacman -Rns "${to_remove[@]}"
+    tui_success "Package removal completed"
+}
+
+run_uninstall() {
+    echo ""
+    tui_title "Uninstall ii-niri"
+    echo ""
+
+    tui_warn "This will remove ii's configuration and data."
+    tui_warn "Optionally, it can also remove ii-related packages that are not required elsewhere."
+
+    if $ask && ! tui_confirm "Continue with uninstall?" "no"; then
+        echo "Cancelled."
+        return 0
+    fi
+
+    # 1) Stop shell
+    qs kill -c ii 2>/dev/null || true
+
+    # 1/3: configs and data
+    tui_step 1 3 "Removing configuration and data files"
+
+    # Remove files tracked in INSTALLED_LISTFILE
+    if [[ -f "${INSTALLED_LISTFILE}" ]]; then
+        while IFS= read -r path; do
+            [[ -z "$path" ]] && continue
+            if [[ -f "$path" ]]; then
+                rm -f -- "$path" 2>/dev/null || true
+            fi
+        done < "${INSTALLED_LISTFILE}"
+        rm -f -- "${INSTALLED_LISTFILE}" 2>/dev/null || true
+    fi
+
+    # Remove known config/state directories
+    rm -rf -- \
+        "${XDG_CONFIG_HOME}/quickshell/ii" \
+        "${XDG_CONFIG_HOME}/illogical-impulse" \
+        "${XDG_STATE_HOME}/quickshell" \
+        "${XDG_CACHE_HOME}/quickshell" \
+        "${BACKUP_DIR}" 2>/dev/null || true
+
+    # Remove snapshots if present (from snapshots.sh)
+    [[ -n "${SNAPSHOTS_DIR}" ]] && rm -rf -- "${SNAPSHOTS_DIR}" 2>/dev/null || true
+
+    tui_success "Configuration and local data removed"
+
+    # 2/3: optional package removal
+    echo ""
+    if [[ "${UNINSTALL_NO_PACKAGES}" == true ]]; then
+        tui_info "Skipping package removal (--no-packages)."
+    elif ! $ask || tui_confirm "Also try to remove ii-related packages (safe mode)?" "no"; then
+        remove_ii_packages_arch
+    else
+        tui_info "Skipped package removal."
+    fi
+
+    # 3/3: final notes
+    tui_step 3 3 "Final cleanup"
+    tui_info "If Niri still starts ii automatically, comment out the spawn-at-startup line in ~/.config/niri/config.kdl:"
+    tui_dim "  spawn-at-startup \"qs\" \"-c\" \"ii\""
+    tui_success "Uninstall complete"
+}
+
+###############################################################################
 # Parse args
 ###############################################################################
 COMMAND=""
@@ -445,9 +639,11 @@ while [[ $# -gt 0 ]]; do
         migrate) COMMAND="migrate"; shift ;;
         doctor) COMMAND="doctor"; shift ;;
         rollback) COMMAND="rollback"; shift ;;
+        uninstall) COMMAND="uninstall"; shift ;;
         status) COMMAND="status"; shift ;;
         -y|--yes) ask=false; shift ;;
         -q|--quiet) quiet=true; shift ;;
+        --no-packages) UNINSTALL_NO_PACKAGES=true; shift ;;
         -h|--help) show_help; exit 0 ;;
         *) echo "Unknown: $1"; show_help; exit 1 ;;
     esac
@@ -462,6 +658,7 @@ case "$COMMAND" in
     migrate) run_migrate ;;
     doctor) run_doctor ;;
     rollback) run_rollback ;;
+    uninstall) run_uninstall ;;
     status) show_status ;;
     "") tui_menu ;;
 esac
